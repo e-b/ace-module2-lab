@@ -21,6 +21,16 @@ function favicon () {
   return utils.extractFilename(config.get('application.favicon'))
 }
 
+function escapeUsername (name?: string): string {
+  if (!name) return ''
+  let sanitized = name.replace(/[\r\n\u2028\u2029]+/g, '')
+  sanitized = sanitized.replace(/(?<!\\)#{/g, '\\#{').replace(/(?<!\\)!{/g, '\\!{').replace(/(?<!\\)#\[/g, '\\#[')
+  if (!sanitized.startsWith('\\')) {
+    sanitized = '\\' + sanitized
+  }
+  return sanitized
+}
+
 export function getUserProfile () {
   return async (req: Request, res: Response, next: NextFunction) => {
     let template: string
@@ -51,9 +61,10 @@ export function getUserProfile () {
 
     let username = user.username
 
-    if (username?.match(/#{(.*)}/) !== null && utils.isChallengeEnabled(challenges.usernameXssChallenge)) {
+    const sstiMatch = username?.match(/^#{(.*)}$/)
+    if (sstiMatch && utils.isChallengeEnabled(challenges.usernameXssChallenge)) {
       req.app.locals.abused_ssti_bug = true
-      const code = username?.substring(2, username.length - 1)
+      const code = sstiMatch[1]
       try {
         if (!code) {
           throw new Error('Username is null')
@@ -63,29 +74,31 @@ export function getUserProfile () {
         const backtickRegex = /^`(?:[^`\\$]|\\.|\$(?!{))*`$/
         const numericRegex = /^-?\d+(?:\.\d+)?$/
         const booleanRegex = /^(?:true|false|null|undefined)$/
+        const arithmeticRegex = /^[-0-9\s+*/%().]+$/
 
         const isSafe = singleQuoteRegex.test(code) ||
           doubleQuoteRegex.test(code) ||
           backtickRegex.test(code) ||
           numericRegex.test(code) ||
-          booleanRegex.test(code)
+          booleanRegex.test(code) ||
+          arithmeticRegex.test(code)
 
         if (!isSafe) {
           throw new Error('Unsafe code execution blocked')
         }
-        username = eval(code) // eslint-disable-line no-eval
+        username = String(eval(code)) // eslint-disable-line no-eval
       } catch (err) {
-        username = '\\' + username
+        username = escapeUsername(username)
       }
-    } else {
-      username = '\\' + username
+    } else if (username) {
+      username = escapeUsername(username)
     }
 
     const themeKey = config.get<string>('application.theme') as keyof typeof themes
     const theme = themes[themeKey] || themes['bluegrey-lightgreen']
 
     if (username) {
-      template = template.replace(/_username_/g, username)
+      template = template.replace(/_username_/g, () => username)
     }
     template = template.replace(/_emailHash_/g, security.hash(user?.email))
     template = template.replace(/_title_/g, entities.encode(config.get<string>('application.name')))
